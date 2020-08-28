@@ -17,6 +17,7 @@ const initialize = async () => {
   const infuraKey = 'f81483dac9a84ecda3861bf2d19d693c';
   web3ETH = new Web3(`${infuraURL}/${infuraKey}`);
 }
+const ethPricesPath = './ethPrices.json';
 const noContractPath = './noContract.csv';
 const BCenLasA1 = 'Introducción a la blockchain para artistas';
 const BCenLasA2 = 'La música en la cadena de bloques';
@@ -52,8 +53,16 @@ const getUserName = async address => {
 }
 
 const ethPrices = {};
+let savedETHPrices;
+try {
+  savedETHPrices = JSON.parse(fs.readFileSync(ethPricesPath));
+} catch (err) {
+  savedETHPrices = {};
+}
 const getETHPriceUSD = async timestamp => {
+  if (timestamp in savedETHPrices) return savedETHPrices[timestamp];
   if (timestamp in ethPrices) return ethPrices[timestamp];
+  console.log(`fetching ETH price for date ${formatDate(timestamp)}...`);
   const maxTimestamp = BigInt(timestamp) + BigInt(halfDay);
   const apiRequest = `${apiURL}&toTs=${maxTimestamp}`;
   const response = await fetch(apiRequest);
@@ -67,7 +76,6 @@ const getETHPriceUSD = async timestamp => {
 const getNoContractEntries = async () => {
   const stream = fs.readFileSync(noContractPath, { encoding: 'utf-8', });
   const data = parse(stream, { delimiter: ',', columns: true, });
-  console.log(data);
   return data;
 }
 
@@ -89,6 +97,7 @@ const getEntriesPreV2 = async (version) => {
   } else {
     instance = new web3ETH.eth.Contract(CoinosisV0, addressV0);
   }
+  console.log(`fetching assessments for contract version ${version}...`);
   const assessments = await instance.getPastEvents('Assessment', {
     fromBlock: 0,
   });
@@ -101,6 +110,7 @@ const getEntriesPreV2 = async (version) => {
     blockInfo[blockHash] = { url, timestamp };
     return blockInfo;
   }, {});
+  console.log(`fetching transfers for contract version ${version}...`);
   const transfers = await instance.getPastEvents('Transfer', { fromBlock: 0, });
   for (const transfer of transfers) {
     const { blockHash, returnValues } = transfer;
@@ -121,7 +131,6 @@ const getEntriesPreV2 = async (version) => {
       currencyPriceUSD: String(currencyPriceUSD),
       rewardUSD: String(reward * currencyPriceUSD),
     };
-    console.log(entry);
     entries.push(entry);
   }
   return entries;
@@ -138,6 +147,7 @@ const getEntriesV2 = async () => {
     } else {
       instance = new web3xDAI.eth.Contract(ProxyEvent, address);
     }
+    console.log(`fetching transfers for event ${event.url}...`);
     const transfers = await instance.getPastEvents('Transfer', {
       fromBlock: 0,
     });
@@ -169,7 +179,6 @@ const getEntriesV2 = async () => {
         entry.currencyPriceUSD = '1.00';
         entry.rewardUSD = reward;
       }
-      console.log(entry);
       entries.push(entry);
     }
   }
@@ -188,8 +197,50 @@ const getEntries = async () => {
     ...entriesV1,
     ...entriesV2,
   ];
-  const csv = stringify(entries);
+  const csv = stringify(entries, { header: true });
+  console.log();
   console.log(csv);
+  const sortedEntries = entries.sort((a, b) => a.address - b.address);
+  const sortedCSV = stringify(sortedEntries, { header: true, columns: [
+    'address',
+    'user',
+    'event',
+    'date',
+    'reward',
+    'currency',
+    'currencyPriceUSD',
+    'rewardUSD',
+  ] });
+  console.log(sortedCSV);
+  const aggr = entries.reduce((aggr, entry) => {
+    const { address, user, reward, currency, rewardUSD } = entry;
+    if (!(address in aggr)) {
+      aggr[address] = {
+        address,
+        user,
+        events: 1,
+        ETH: currency === 'ETH' ? Number(reward) : 0,
+        xDAI: currency === 'xDAI' ? Number(reward) : 0,
+        USD: Number(rewardUSD),
+      };
+    } else {
+      aggr[address].events ++;
+      aggr[address].USD += Number(rewardUSD);
+      if (currency === 'ETH') {
+        aggr[address].ETH += Number(reward);
+      }
+      else if (currency === 'xDAI') {
+        aggr[address].xDAI += Number(reward);
+      }
+    }
+    return aggr;
+  }, {});
+  const aggrValues = Object.values(aggr);
+  const aggrCSV = stringify(aggrValues, { header: true });
+  console.log(aggrCSV);
+  if (Object.keys(ethPrices).length > Object.keys(savedETHPrices).length) {
+    fs.writeFileSync(ethPricesPath, JSON.stringify(ethPrices));
+  }
   dbModule.disconnect();
 }
 
